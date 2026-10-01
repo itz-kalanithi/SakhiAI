@@ -247,6 +247,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const speakMessage = useCallback((text: string, onEnd?: () => void) => {
+    // Read the actual content language instead of blindly using the selected UI language.
+    // This fixes Read Aloud when, for example, Tamil content is displayed while the
+    // app language is still English.
+    const speechLanguage = voiceService.detectLanguageFromText(text);
+
     setAssistantSpokenText(text);
     setVoiceState('speaking');
     setVoiceDebugInfo((prev) => ({
@@ -257,7 +262,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     voiceService.speak(
       text,
-      language,
+      speechLanguage,
       () => {
         setVoiceState('speaking');
         setVoiceDebugInfo((prev) => ({ ...prev, ttsStatus: 'speaking' }));

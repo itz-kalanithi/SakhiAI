@@ -35,6 +35,7 @@ class VoiceService {
   private sessionCommittedText: string = '';
   private currentInterimText: string = '';
   private accumulatedText: string = '';
+  private recognitionFinalText: string = '';
   private currentLanguage: LanguageCode = 'hi';
   private currentSpeechLocale: string = 'hi-IN';
   private cachedVoices: SpeechSynthesisVoice[] = [];
@@ -278,8 +279,9 @@ class VoiceService {
     this.onEndCallback = onEnd;
     this.isListeningActive = true;
 
-    // Start background MediaRecorder for raw audio analysis
-    this.startMediaRecorder();
+    // IMPORTANT: Do not open a second microphone stream here.
+    // SpeechRecognition owns the microphone while listening. Opening MediaRecorder
+    // at the same time can make Chrome/Edge report audio-capture or not-allowed.
 
     this.startLevelAnimation();
     this.createAndStartRecognition();
@@ -370,13 +372,15 @@ class VoiceService {
       };
 
       this.recognition.onresult = (event: any) => {
-        let currentSessionFinal = '';
         let currentInterim = '';
 
-        for (let i = 0; i < event.results.length; ++i) {
+        // Only process results that changed. event.results contains older
+        // final results too, so re-reading the whole collection would duplicate
+        // the user's words every time a new result arrives.
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
           const item = event.results[i];
           if (item.isFinal) {
-            currentSessionFinal += item[0].transcript + ' ';
+            this.recognitionFinalText += `${item[0].transcript.trim()} `;
           } else {
             currentInterim += item[0].transcript;
           }
@@ -384,11 +388,11 @@ class VoiceService {
 
         const parts = [
           this.sessionCommittedText,
-          currentSessionFinal.trim(),
+          this.recognitionFinalText.trim(),
           currentInterim.trim()
         ].filter(Boolean);
 
-        const fullTranscript = parts.join(' ').trim();
+        const fullTranscript = parts.join(' ').replace(/\s+/g, ' ').trim();
         this.accumulatedText = fullTranscript;
         this.currentInterimText = currentInterim;
 
@@ -442,7 +446,6 @@ class VoiceService {
         }
 
         this.stopLevelAnimation();
-        this.stopMediaRecorder();
         this.playAudioTone('listen_stop');
 
         if (this.onEndCallback) {
@@ -470,7 +473,6 @@ class VoiceService {
     const finalResult = this.accumulatedText.trim();
     this.isListeningActive = false;
     this.stopLevelAnimation();
-    this.stopMediaRecorder();
 
     if (this.recognition) {
       try {
@@ -480,13 +482,14 @@ class VoiceService {
           this.recognition.abort();
         } catch (err) {}
       }
+    } else if (this.onEndCallback) {
+      // No recognition object exists, so finish the session ourselves.
+      const cb = this.onEndCallback;
+      this.onEndCallback = null;
+      cb(finalResult);
     }
 
     this.playAudioTone('listen_stop');
-
-    if (this.onEndCallback) {
-      this.onEndCallback(finalResult);
-    }
 
     return finalResult;
   }
@@ -731,6 +734,24 @@ class VoiceService {
       this.onEndTtsCallback = null;
       cb();
     }
+  }
+
+  /**
+   * Detect the most likely language from the script used in the text.
+   * This is intentionally script-based so Read Aloud works even when the
+   * currently selected UI language differs from the language of the content.
+   */
+  public detectLanguageFromText(text: string): LanguageCode {
+    const value = text || '';
+
+    if (/[\u0B80-\u0BFF]/.test(value)) return 'ta'; // Tamil
+    if (/[\u0C00-\u0C7F]/.test(value)) return 'te'; // Telugu
+    if (/[\u0D00-\u0D7F]/.test(value)) return 'ml'; // Malayalam
+    if (/[\u0C80-\u0CFF]/.test(value)) return 'kn'; // Kannada
+    if (/[\u0980-\u09FF]/.test(value)) return 'bn'; // Bengali
+    if (/[\u0900-\u097F]/.test(value)) return 'hi'; // Devanagari / Hindi
+
+    return 'en';
   }
 
   public getVoices(): SpeechSynthesisVoice[] {
